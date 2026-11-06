@@ -1,5 +1,4 @@
 import numpy as np
-import pandas as pd
  
 class TransportationProblem:
     def __init__(self, cost_matrix, supply, demand, auto_balance=True):
@@ -46,60 +45,63 @@ class TransportationProblem:
         return allocation
  
     @staticmethod
+    def _penalties(cost_matrix, axis):
+        """Difference between the two smallest costs along `axis` (1 = per row, 0 = per column)."""
+        sorted_costs = np.sort(cost_matrix, axis=axis)
+        if sorted_costs.shape[axis] < 2:
+            # Only one cell left in the line: use its cost so it is allocated first.
+            return np.take(sorted_costs, 0, axis=axis).copy()
+        diff = np.take(sorted_costs, 1, axis=axis) - np.take(sorted_costs, 0, axis=axis)
+        return np.where(np.isnan(diff), 0.0, diff)  # inf - inf from forbidden routes
+
+    @staticmethod
     def row_penalties(cost_matrix):
-        penalties = np.zeros(cost_matrix.shape[0])
-        for i in range(cost_matrix.shape[0]):
-            finite_vals = cost_matrix[i, np.isfinite(cost_matrix[i, :])]
-            if len(finite_vals) < 2:
-                penalties[i] = 0  # Or choose an alternative handling
-            else:
-                two_min = np.partition(finite_vals, 1)[:2]
-                penalties[i] = two_min[1] - two_min[0]
-        return penalties
- 
- 
+        return TransportationProblem._penalties(cost_matrix, axis=1)
+
     @staticmethod
     def col_penalties(cost_matrix):
-        two_min = np.partition(cost_matrix, 1, axis=0)[:2, :]
-        penalties = two_min[1, :] - two_min[0, :]
-        return penalties
- 
+        return TransportationProblem._penalties(cost_matrix, axis=0)
+
     def VogelSolver(self):
-        cost_mat = self.cost_matrix.copy().astype(float)
-        supply = self.supply.copy()
-        demand = self.demand.copy()
-        n, m = cost_mat.shape
-        allocation = np.zeros((n, m))
- 
-        while np.any(supply > 0) and np.any(demand > 0):
-            row_pen = self.row_penalties(cost_mat)
-            col_pen = self.col_penalties(cost_mat)
-            max_row_pen = np.nanmax(row_pen) if not np.all(np.isnan(row_pen)) else -np.inf
-            max_col_pen = np.nanmax(col_pen) if not np.all(np.isnan(col_pen)) else -np.inf
- 
-            if max_row_pen >= max_col_pen:
-                row = np.nanargmax(row_pen)
-                col = np.nanargmin(cost_mat[row])
+        cost_mat = self.cost_matrix.astype(float)
+        supply = self.supply.astype(float)
+        demand = self.demand.astype(float)
+        allocation = np.zeros(cost_mat.shape)
+        active_rows = supply > 0
+        active_cols = demand > 0
+
+        # Penalties are computed only over rows/columns that still have supply/demand.
+        # Considering exhausted lines lets one with penalty 0 be re-selected forever.
+        while active_rows.any() and active_cols.any():
+            rows = np.flatnonzero(active_rows)
+            cols = np.flatnonzero(active_cols)
+            sub = cost_mat[np.ix_(rows, cols)]
+            row_pen = self.row_penalties(sub)
+            col_pen = self.col_penalties(sub)
+
+            if row_pen.max() >= col_pen.max():
+                r = int(np.argmax(row_pen))
+                c = int(np.argmin(sub[r]))
             else:
-                col = np.nanargmax(col_pen)
-                row = np.nanargmin(cost_mat[:, col])
- 
+                c = int(np.argmax(col_pen))
+                r = int(np.argmin(sub[:, c]))
+            row, col = rows[r], cols[c]
+
             alloc = min(supply[row], demand[col])
             allocation[row, col] = alloc
             supply[row] -= alloc
             demand[col] -= alloc
- 
-            if supply[row] == 0:
-                cost_mat[row, :] = np.inf
-            else:
-                cost_mat[:, col] = np.inf
- 
+            if supply[row] <= 0:
+                active_rows[row] = False
+            if demand[col] <= 0:
+                active_cols[col] = False
+
         return allocation
- 
+
     def LeastCostMethod(self):
-        cost_mat = self.cost_matrix.copy()
-        supply = self.supply.copy()
-        demand = self.demand.copy()
+        cost_mat = self.cost_matrix.astype(float)  # np.inf can't be stored in an int array
+        supply = self.supply.astype(float)
+        demand = self.demand.astype(float)
         allocation = np.zeros_like(cost_mat, dtype=float)
  
         while True:
@@ -129,130 +131,129 @@ class TransportationProblem:
         Given basic_cells (a list of (row, col) tuples) and a starting cell,
         find a closed loop (cycle) that alternates between horizontal and vertical moves.
         """
-        basic_set = set(basic_cells)
- 
-        def search(path):
+        cells = set(basic_cells) | {start}
+
+        def search(path, move_in_row):
             current = path[-1]
-            # When cycle is closed (length >= 4) and returns to start, we've found a cycle.
-            if len(path) >= 4 and current == start:
-                return path
-            # Determine allowed move direction based on last move.
-            # For the first move, both row and column moves are allowed.
-            last_direction = None
-            if len(path) >= 2:
-                prev = path[-2]
-                last_direction = 'row' if current[0] == prev[0] else 'col'
-            for cell in basic_set:
-                # Skip if same as current or if already in path (unless it is the start and eligible to close)
+            for cell in cells:
                 if cell == current:
                     continue
-                if cell in path and cell != start:
+                # Move along the current row, or along the current column.
+                if move_in_row and cell[0] != current[0]:
                     continue
-                # Must be in same row or same column.
-                if current[0] != cell[0] and current[1] != cell[1]:
+                if not move_in_row and cell[1] != current[1]:
                     continue
-                # If a last move exists, alternate direction.
-                if last_direction is not None:
-                    if last_direction == 'row' and current[1] != cell[1]:
-                        continue
-                    if last_direction == 'col' and current[0] != cell[0]:
-                        continue
-                # Do not allow immediate return to start unless the path length is >=3 (to allow cycle length of 4)
-                if cell == start and len(path) < 3:
+                if cell == start:
+                    # Close the loop: needs >= 4 cells and an even count so the
+                    # closing move is perpendicular to the first move.
+                    if len(path) >= 4 and len(path) % 2 == 0:
+                        return path  # start is NOT repeated at the end
                     continue
- 
-                new_path = path + [cell]
-                result = search(new_path)
+                if cell in path:
+                    continue
+                result = search(path + [cell], not move_in_row)
                 if result is not None:
                     return result
             return None
+
+        # The loop may leave the start cell along its row or along its column.
+        return search([start], True) or search([start], False)
  
-        return search([start])
- 
-    def ModiMethod(self):
+    def _complete_basis(self, allocation):
+        """
+        Return a set of exactly m+n-1 basic cells forming a spanning tree of the
+        transportation graph. Cells with positive allocation are always included;
+        zero-allocation cells are added (cheapest first, skipping any that would
+        close a loop) to repair a degenerate solution.
+        """
+        m, n = allocation.shape
+        parent = list(range(m + n))  # union-find over rows 0..m-1 and columns m..m+n-1
+
+        def find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        basis = set()
+        positive = [(i, j) for i in range(m) for j in range(n) if allocation[i, j] > 1e-12]
+        zeros = sorted(
+            ((i, j) for i in range(m) for j in range(n) if allocation[i, j] <= 1e-12),
+            key=lambda c: self.cost_matrix[c],
+        )
+        for (i, j) in positive + zeros:
+            ri, rj = find(i), find(m + j)
+            if ri != rj:
+                parent[ri] = rj
+                basis.add((i, j))
+            if len(basis) == m + n - 1:
+                break
+        return basis
+
+    def ModiMethod(self, max_iter=1000):
         # Get initial feasible solution using Vogel's method
         allocation = self.VogelSolver()
         m, n = allocation.shape
- 
-        # Iteratively improve the solution until optimality
-        while True:
-            # Identify basic cells (cells with positive allocation)
-            basic_cells = [(i, j) for i in range(m) for j in range(n) if allocation[i, j] > 0]
-            # --- Step 1: Compute dual variables u and v for basic cells ---
+        cost = self.cost_matrix.astype(float)
+        eps = 1e-9
+
+        # The basis must always hold exactly m+n-1 cells (a spanning tree), even when
+        # some of them carry zero allocation (degenerate case). Deriving it from
+        # "allocation > 0" would leave u/v undefined.
+        basis = self._complete_basis(allocation)
+
+        for _ in range(max_iter):
+            # --- Step 1: Compute dual variables u and v from the basic cells ---
             u = np.full(m, np.nan)
             v = np.full(n, np.nan)
-            u[0] = 0  # Set an arbitrary starting point
+            u[0] = 0
             updated = True
             while updated:
                 updated = False
-                for (i, j) in basic_cells:
-                    if np.isnan(u[i]) and not np.isnan(v[j]):
-                        u[i] = self.cost_matrix[i, j] - v[j]
+                for (i, j) in basis:
+                    if not np.isnan(u[i]) and np.isnan(v[j]):
+                        v[j] = cost[i, j] - u[i]
                         updated = True
-                    elif not np.isnan(u[i]) and np.isnan(v[j]):
-                        v[j] = self.cost_matrix[i, j] - u[i]
+                    elif np.isnan(u[i]) and not np.isnan(v[j]):
+                        u[i] = cost[i, j] - v[j]
                         updated = True
- 
-            # --- Step 2: Compute reduced costs for non-basic cells ---
-            reduced_cost = np.full((m, n), np.nan)
-            non_basic = []
+
+            # --- Step 2/4: Reduced costs of non-basic cells; pick most negative ---
+            min_val = -eps
+            entering_cell = None
             for i in range(m):
                 for j in range(n):
-                    if (i, j) not in basic_cells:
-                        non_basic.append((i, j))
-                        reduced_cost[i, j] = self.cost_matrix[i, j] - (u[i] + v[j])
- 
-            # --- Step 3: Check for optimality ---
-            if all(reduced_cost[i, j] >= 0 for (i, j) in non_basic if not np.isnan(reduced_cost[i, j])):
-                print("Optimal solution found.")
-                return allocation
- 
-            # --- Step 4: Choose the entering cell (most negative reduced cost) ---
-            min_val = 0
-            entering_cell = None
-            for (i, j) in non_basic:
-                if not np.isnan(reduced_cost[i, j]) and reduced_cost[i, j] < min_val:
-                    min_val = reduced_cost[i, j]
-                    entering_cell = (i, j)
+                    if (i, j) in basis:
+                        continue
+                    d = cost[i, j] - (u[i] + v[j])
+                    if d < min_val:
+                        min_val = d
+                        entering_cell = (i, j)
+
+            # --- Step 3: Optimal if no negative reduced cost ---
             if entering_cell is None:
-                print("No entering cell found; solution is optimal.")
                 return allocation
- 
-            # --- Step 5: Find a cycle (closed loop) including the entering cell ---
-            temp_basic = basic_cells.copy()
-            temp_basic.append(entering_cell)
-            cycle = self.find_cycle(temp_basic, entering_cell)
+
+            # --- Step 5: Find the closed loop through the entering cell ---
+            cycle = self.find_cycle(list(basis), entering_cell)
             if cycle is None:
-                print("No cycle found. Something went wrong.")
-                return allocation
- 
-            # --- Step 6: Determine adjustment theta ---
-            # In the cycle, the entering cell is assigned a '+' sign.
-            # Alternate signs along the cycle.
-            signs = [1 if idx % 2 == 0 else -1 for idx in range(len(cycle))]
-            theta = np.inf
-            leaving_index = None
-            for idx, cell in enumerate(cycle):
-                # Skip the entering cell (always with '+') when searching for theta
-                if signs[idx] == -1:
-                    i, j = cell
-                    if allocation[i, j] < theta:
-                        theta = allocation[i, j]
-                        leaving_index = idx
- 
-            # --- Step 7: Update allocations along the cycle ---
-            for idx, cell in enumerate(cycle):
-                i, j = cell
-                if idx == 0:
-                    allocation[i, j] += theta  # entering cell gets theta added
-                else:
-                    allocation[i, j] += signs[idx] * theta
- 
-            # Remove the leaving cell from the basis by setting its allocation to zero
-            if leaving_index is not None:
-                leave = cycle[leaving_index]
-                allocation[leave[0], leave[1]] = 0
- 
+                raise RuntimeError("MODI: no closed loop found for the entering cell.")
+
+            # --- Step 6: theta = smallest allocation among the '-' cells ---
+            # cycle[0] is the entering cell ('+'); signs alternate along the loop.
+            minus_cells = [cycle[k] for k in range(1, len(cycle), 2)]
+            leaving = min(minus_cells, key=lambda c: allocation[c])
+            theta = allocation[leaving]
+
+            # --- Step 7: Shift theta around the loop and update the basis ---
+            for k, (i, j) in enumerate(cycle):
+                allocation[i, j] += theta if k % 2 == 0 else -theta
+            allocation[leaving] = 0.0  # remove float residue
+            basis.remove(leaving)
+            basis.add(entering_cell)
+
+        raise RuntimeError(f"MODI did not converge within {max_iter} iterations.")
+
     def solve(self, method='VAM'):
         if method == 'NWCR':
             self.allocation = self.NorthWestSolver()
@@ -266,12 +267,13 @@ class TransportationProblem:
             raise ValueError("Invalid method. Choose NWCR, VAM, LCM, or MODI.")
         return self.allocation
  
-# Example usage:
-mat = [[4,8,8,0],[16,24,16,0],[8,16,24,0]]
-supply = np.array([76,82,77])
-demand = np.array([72,102,41,20])
-tp = TransportationProblem(mat, supply, demand)
-print("Vogel's Solution:")
-print(tp.solve('VAM'))
-print("\nModi Method Solution (Optimal):")
-print(tp.solve('MODI'))
+if __name__ == "__main__":
+    # Example usage:
+    mat = [[4,8,8,0],[16,24,16,0],[8,16,24,0]]
+    supply = np.array([76,82,77])
+    demand = np.array([72,102,41,20])
+    tp = TransportationProblem(mat, supply, demand)
+    print("Vogel's Solution:")
+    print(tp.solve('VAM'))
+    print("\nModi Method Solution (Optimal):")
+    print(tp.solve('MODI'))

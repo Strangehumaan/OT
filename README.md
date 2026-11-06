@@ -141,12 +141,12 @@ modi_solution = tp.solve('MODI')
 print("\nModi Method Solution (Optimal):")
 print(modi_solution)
 
-# OTToolsher available methods: 'NWCR' (North-West Corner Rule), 'LCM' (Least Cost Method)
+# Other available methods: 'NWCR' (North-West Corner Rule), 'LCM' (Least Cost Method)
 ```
 
 ## Visualization Examples
 
-The graphical method provides interactive PlOTToolsly visualizations for bOTToolsh 2D and 3D linear programming problems:
+The graphical method provides interactive Plotly visualizations for both 2D and 3D linear programming problems:
 
 ### 2D Example
 For 2-variable problems, the library visualizes:
@@ -166,9 +166,8 @@ For 3-variable problems, the library visualizes:
 ## Dependencies
 
 - NumPy
-- PlOTToolsly
+- Plotly
 - SciPy
-- Pandas
 
 ## License
 
